@@ -2,8 +2,9 @@ Fergal's TF Ops
 ===============
 This library provides some convenience functions for doing some common
 operations in tensorflow. I recommend you also look at the tf.layers module, as
-there is a lot of overlap; I use these functions as some of those in tf.layers
-are a little bit unclear about how they work.
+there is a lot of overlap; I use these functions as some of those in `tf.layers
+<https://www.tensorflow.org/api_docs/python/tf/layers>`_ are a little bit 
+unclear about how they work.
 
 In addition, I define operations to do complex valued convolution (complex 
 inputs and complex weights).

@@ -8,11 +8,16 @@ import numpy as np
 
 
 def variable_with_wd(name, shape, stddev=None, wd=None, norm=2):
-    """ Helper to create an initialized Variable with weight decay.
+    """ Helper to create an initialized variable with weight decay.
 
-    Note that the Variable is initialized with a truncated normal distribution.
+    Note that the variable is initialized with a truncated normal distribution.
     A weight decay is added only if one is specified. Also will add summaries
     for this variable.
+
+    Internally, it calls tf.get_variable, so you can use this to re-get already
+    defined variables (so long as the reuse scope is set to true). If it
+    re-fetches an already existing variable, it will not add regularization
+    again.
 
     Parameters
     ----------
@@ -24,9 +29,11 @@ def variable_with_wd(name, shape, stddev=None, wd=None, norm=2):
         standard deviation of a truncated Gaussian
     wd: positive float or None
         add L2Loss weight decay multiplied by this float. If None, weight
-        decay is not added for this Variable.
+        decay is not added for this variable.
     norm: positive float
-        Which regularizer to apply. E.g. norm=2 uses L2 regularization
+        Which regularizer to apply. E.g. norm=2 uses L2 regularization, and
+        norm=p adds :math:`wd \\times ||w||_{p}^{p}` to the
+        REGULARIZATION_LOSSES. See :py:func:`real_reg`.
 
     Returns
     -------
@@ -36,21 +43,25 @@ def variable_with_wd(name, shape, stddev=None, wd=None, norm=2):
         stddev = get_xavier_stddev(shape, uniform=False)
     initializer = tf.truncated_normal_initializer(stddev=stddev)
 
+    var_before = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES)
     var = tf.get_variable(name, shape, dtype=tf.float32,
                           initializer=initializer)
-    complex_reg(var, wd, norm)
-    variable_summaries(var, name)
+    var_after = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES)
+
+    if len(var_before) != len(var_after):
+        complex_reg(var, wd, norm)
+        variable_summaries(var, name)
 
     return var
 
 
 def variable_summaries(var, name='summaries'):
-    """Attach a lot of summaries to a Tensor (for TensorBoard visualization).
+    """Attach a lot of summaries to a variable (for TensorBoard visualization).
 
     Parameters
     ----------
-    var : tf tensor
-        tensor for which you wish to create summaries
+    var : tf variable
+        variable for which you wish to create summaries
     name : str
         scope under which you want to add your summary ops
     """
@@ -65,8 +76,10 @@ def variable_summaries(var, name='summaries'):
         tf.summary.histogram('histogram', var)
 
 
-def loss(labels, logits, reg=1):
+def loss(labels, logits, λ=1):
     """ Compute sum of data + regularization losses.
+
+    loss = data_loss + λ * reg_losses
 
     The regularization loss will sum over all the variables that already
     exist in the GraphKeys.REGULARIZATION_LOSSES.
@@ -75,7 +88,7 @@ def loss(labels, logits, reg=1):
     ----------
     Y : ndarray(dtype=float, ndim=(N,C))
         The vector of labels. It must be a one-hot vector
-    reg : float
+    λ : float
         Multiplier to use on all regularization losses. Be careful not
         to apply things twice, as all the functions in this module typically set
         regularization losses at a block level (for more fine control).
@@ -84,18 +97,20 @@ def loss(labels, logits, reg=1):
 
     Returns
     -------
-    Tuple of (loss, data_loss, reg_loss)
+    losses : tuple of (loss, data_loss, reg_loss)
+        For optimization, only need to use the first element in the tuple. I
+        return the other two for displaying purposes.
     """
     cross_entropy = tf.nn.softmax_cross_entropy_with_logits(
         labels=labels, logits=logits)
     data_loss = tf.reduce_mean(cross_entropy, name='cross_entropy')
     reg_variables = tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES)
     reg_term = tf.reduce_sum(reg_variables)
-    loss = data_loss + reg*reg_term
+    loss = data_loss + λ*reg_term
     return loss, data_loss, reg_term
 
 
-def convolution(input_, output_dim, size=3, stride=1, stddev=None, wd=None,
+def convolution(x, output_dim, size=3, stride=1, stddev=None, wd=None,
                 norm=2, name='conv2d', with_relu=False, with_bn=False,
                 with_bias=False, bias_start=0.):
     """Function to do a simple convolutional layer
@@ -107,8 +122,8 @@ def convolution(input_, output_dim, size=3, stride=1, stddev=None, wd=None,
 
     Parameters
     ----------
-    input_ : tf tensor
-        The input tensor
+    x : tf variable
+        The input variable
     output_dim : int
         number of filters to have
     size : int
@@ -116,16 +131,15 @@ def convolution(input_, output_dim, size=3, stride=1, stddev=None, wd=None,
     stride : int
         what stride to use for convolution
     stddev : None or positive float
-        Initialization stddev. If set to None, will use :math:`\\sqrt(2/n)`
-        where n is the fan-out.
+        Initialization stddev. If set to None, will use
+        :py:func:`get_xavier_stddev`
     wd : None or positive float
         What weight decay to use
     norm : positive float
-        What norm to use for regularization. Regularization will then be
-        :math:`wd  ||w||_{p}^{p}`
     name : str
         The tensorflow variable scope to create the variables under
     with_relu : bool
+        Use a relu after convolution
     with_bias : bool
         add a bias after convolution? (this will be ignored if batch norm is
         used)
@@ -136,12 +150,12 @@ def convolution(input_, output_dim, size=3, stride=1, stddev=None, wd=None,
     varlist = []
     with tf.variable_scope(name):
         # Get the variables needed for convolution
-        w_shape = (size, size, input_.get_shape().as_list()[-1], output_dim)
+        w_shape = (size, size, x.get_shape().as_list()[-1], output_dim)
         w = variable_with_wd('w', w_shape, stddev, wd, norm)
         varlist.append(w)
 
         # Do the convolution
-        y = tf.nn.conv2d(input_, w, strides=[1, stride, stride, 1],
+        y = tf.nn.conv2d(x, w, strides=[1, stride, stride, 1],
                          padding='SAME')
         if with_bias:
             init = tf.constant_initializer(bias_start)
@@ -175,7 +189,71 @@ def convolution(input_, output_dim, size=3, stride=1, stddev=None, wd=None,
     return y
 
 
-def linear(input_, output_dim, stddev=None, wd=0.01, norm=2, name='fc',
+def convolution_transpose(x, output_dim, shape, size=3, stride=1,
+                          stddev=None, wd=0.0, norm=1, name='conv2d',
+                          with_relu=False):
+    """Function to do the transpose of convolution
+
+    In a similar way we have a convenience function, :py:func:`convolution` to
+    wrap tf.nn.conv2d (create variables, add a relu, etc.), this function wraps
+    tf.nn.conv2d_transpose. If you want more fine control over things, use
+    tf.nn.conv2d_transpose directly, but for most purposes, this function should
+    do what you need. Adds the variables to tf.GraphKeys.REGULARIZATION_LOSSES
+    if the wd parameter is positive.
+
+    I do not subtract the bias after doing transpose convolution.
+
+    Parameters
+    ----------
+    x : tf variable
+        The input variable
+    output_dim : int
+        number of filters to have
+    output_shape : list-like or 1-d Tensor
+        list/tensor representing the output shape of the deconvolution op
+    size : int
+        kernel spatial support
+    stride : int
+        what stride to use for convolution
+    stddev : None or positive float
+        Initialization stddev. If set to None, will use
+        :py:func:`get_xavier_stddev`
+    wd : None or positive float
+        What weight decay to use
+    norm : positive float
+        Which regularizer to apply. E.g. norm=2 uses L2 regularization, and
+        norm=p adds :math:`wd \\times ||w||_{p}^{p}` to the
+        REGULARIZATION_LOSSES. See :py:func:`real_reg`.
+    name : str
+        The tensorflow variable scope to create the variables under
+    with_relu : bool
+        Use a relu after convolution
+
+    Returns
+    -------
+    y : tf variable
+        Result of applying complex convolution transpose to x
+    """
+
+    varlist = []
+    with tf.variable_scope(name):
+        # Define the real and imaginary components of the weights
+        w_shape = (size, size, x.get_shape().as_list()[-1], output_dim)
+        w = variable_with_wd('w', w_shape, stddev, wd, norm)
+        varlist.append(w)
+
+        # Do the convolution
+        y = tf.nn.conv2d_transpose(
+            x, w, output_dim, strides=[1, stride, stride, 1], padding='SAME')
+
+        if with_relu:
+            y = tf.nn.relu(y)
+
+    # Return the results
+    return y
+
+
+def linear(x, output_dim, stddev=None, wd=0.01, norm=2, name='fc',
            with_relu=False, with_bias=False, bias_start=0.0,
            with_drop=False, drop_p=0.2, training=True):
     """Function to do a simple fully connected layer
@@ -187,8 +265,8 @@ def linear(input_, output_dim, stddev=None, wd=0.01, norm=2, name='fc',
 
     Parameters
     ----------
-    input_ : tf tensor
-        The input tensor
+    x : tf variable
+        The input variable
     output_dim : int
         number of filters to have
     size : int
@@ -196,15 +274,16 @@ def linear(input_, output_dim, stddev=None, wd=0.01, norm=2, name='fc',
     stride : int
         what stride to use for convolution
     stddev : None or positive float
-        Initialization stddev. If set to None, will use √(2/n) where n is the
-        fan-out.
+        Initialization stddev. If set to None, will use
+        :py:func:`get_xavier_stddev`
     wd : positive float
         Regularization power (e.g. set to 2 for L2 Regularization)
     wd : None or positive float
         What weight decay to use
     norm : positive float
-        What norm to use for regularization. Regularization will then be
-        :math:`wd  ||w||_{p}^{p}`
+        Which regularizer to apply. E.g. norm=2 uses L2 regularization, and
+        norm=p adds :math:`wd \\times ||w||_{p}^{p}` to the
+        REGULARIZATION_LOSSES. See :py:func:`real_reg`.
     name : str
         The tensorflow variable scope to create the variables under
     with_relu : bool
@@ -223,17 +302,22 @@ def linear(input_, output_dim, stddev=None, wd=0.01, norm=2, name='fc',
         change it on the fly, provide training as a tf tensor (e.g. a
         placeholder) that contains a single boolean value that can be changed on
         the fly.
+
+    Returns
+    -------
+    y : tf variable
+        Result of applying fully connected layer to x
     """
 
     varlist = []
     with tf.variable_scope(name):
         # Get the variables needed for fully connected layer
-        w_shape = [input_.get_shape().as_list()[-1], output_dim]
+        w_shape = [x.get_shape().as_list()[-1], output_dim]
         w = variable_with_wd('w', w_shape, stddev, wd, norm)
         varlist.append(w)
 
         # Do the fully connected layer
-        y = tf.matmul(input_, w)
+        y = tf.matmul(x, w)
 
         # TODO - implement batch norm. Remember to not use a bias if we're using
         # batch norm.
@@ -273,7 +357,7 @@ def linear(input_, output_dim, stddev=None, wd=0.01, norm=2, name='fc',
     return y
 
 
-def complex_convolution(input_, output_dim, size=3, stride=1, stddev=None,
+def complex_convolution(x, output_dim, size=3, stride=1, stddev=None,
                         wd=0.0, norm=1.0, name='conv2d', with_bias=False,
                         bias_start=0.0):
     """Function to do complex convolution
@@ -287,8 +371,8 @@ def complex_convolution(input_, output_dim, size=3, stride=1, stddev=None,
 
     Parameters
     ----------
-    input_ : tf tensor
-        The input tensor
+    x : tf variable
+        The input variable
     output_dim : int
         number of filters to have
     size : int
@@ -296,13 +380,14 @@ def complex_convolution(input_, output_dim, size=3, stride=1, stddev=None,
     stride : int
         what stride to use for convolution
     stddev : None or positive float
-        Initialization stddev. If set to None, will use :math:`\\sqrt(2/n)`
-        where n is the fan-out.
+        Initialization stddev. If set to None, will use
+        :py:func:`get_xavier_stddev`
     wd : None or positive float
         What weight decay to use
     norm : positive float
-        What norm to use for regularization. Regularization will then be
-        :math:`wd  ||w||_{p}^{p}`
+        Which regularizer to apply. E.g. norm=2 uses L2 regularization, and
+        norm=p adds :math:`wd \\times ||w||_{p}^{p}` to the
+        REGULARIZATION_LOSSES. See :py:func:`real_reg`.
     name : str
         The tensorflow variable scope to create the variables under
     with_bias : bool
@@ -313,20 +398,20 @@ def complex_convolution(input_, output_dim, size=3, stride=1, stddev=None,
 
     Returns
     -------
-    out : tensor
-        The result from applying the specified op
+    y : tf variable
+        Result of applying complex convolution to x
     """
 
     varlist = []
     with tf.variable_scope(name):
         # Define the real and imaginary components of the weights
-        w_shape = [size, size, input_.get_shape().as_list()[-1], output_dim]
+        w_shape = [size, size, x.get_shape().as_list()[-1], output_dim]
         w_r = variable_with_wd('w_real', w_shape, stddev, wd, norm)
         w_i = variable_with_wd('w_imag', w_shape, stddev, wd, norm)
         w = tf.complex(w_r, w_i)
         varlist.append(w)
 
-        y = cconv2d(input_, w, strides=[1, stride, stride, 1], name=name)
+        y = cconv2d(x, w, strides=[1, stride, stride, 1], name=name)
         y_r, y_i = tf.real(y), tf.imag(y)
 
         if with_bias:
@@ -343,9 +428,8 @@ def complex_convolution(input_, output_dim, size=3, stride=1, stddev=None,
     return y
 
 
-def complex_convolution_transpose(input_, output_dim, shape, size=3, stride=1,
-                                  stddev=None, wd=0.0, norm=1, name='conv2d',
-                                  with_bias=False, bias_start=0.0):
+def complex_convolution_transpose(x, output_dim, shape, size=3, stride=1,
+                                  stddev=None, wd=0.0, norm=1, name='conv2d'):
     """Function to do the conjugate transpose of complex convolution
 
     In a similar way we have a convenience function, :py:func:`convolution` to
@@ -355,10 +439,12 @@ def complex_convolution_transpose(input_, output_dim, shape, size=3, stride=1,
     what you need. Adds the variables to tf.GraphKeys.REGULARIZATION_LOSSES
     if the wd parameter is positive.
 
+    We do not subtract the bias after doing the transpose convolution.
+
     Parameters
     ----------
-    input_ : tf tensor
-        The input tensor
+    x : tf variable
+        The input variable
     output_dim : int
         number of filters to have
     output_shape : list-like or 1-d Tensor
@@ -368,48 +454,35 @@ def complex_convolution_transpose(input_, output_dim, shape, size=3, stride=1,
     stride : int
         what stride to use for convolution
     stddev : None or positive float
-        Initialization stddev. If set to None, will use :math:`\\sqrt(2/n)`
-        where n is the fan-out.
+        Initialization stddev. If set to None, will use
+        :py:func:`get_xavier_stddev`
     wd : None or positive float
         What weight decay to use
     norm : positive float
-        What norm to use for regularization. Regularization will then be
-        :math:`wd  ||w||_{p}^{p}`
+        Which regularizer to apply. E.g. norm=2 uses L2 regularization, and
+        norm=p adds :math:`wd \\times ||w||_{p}^{p}` to the
+        REGULARIZATION_LOSSES. See :py:func:`real_reg`.
     name : str
         The tensorflow variable scope to create the variables under
-    with_bias : bool
-        add a bias after convolution? (this will be ignored if batch norm is
-        used)
-    bias_start : complex float
-        If a bias is used, what to initialize it to.
 
     Returns
     -------
-    out : tensor
-        The result from applying the specified op
+    y : tf variable
+        Result of applying complex convolution transpose to x
     """
 
     varlist = []
     with tf.variable_scope(name):
         # Define the real and imaginary components of the weights
-        w_shape = [size, size, input_.get_shape().as_list()[-1], output_dim]
+        w_shape = [size, size, x.get_shape().as_list()[-1], output_dim]
         w_r = variable_with_wd('w_real', w_shape, stddev, wd, norm)
         w_i = variable_with_wd('w_imag', w_shape, stddev, wd, norm)
         w = tf.complex(w_r, w_i)
         varlist.append(w)
 
         y = cconv2d_transpose(
-            input_, w, output_dim, strides=[1, stride, stride, 1], name=name)
+            x, w, output_dim, strides=[1, stride, stride, 1], name=name)
         y_r, y_i = tf.real(y), tf.imag(y)
-
-        if with_bias:
-            init_r = tf.constant_initializer(np.real(bias_start))
-            init_i = tf.constant_initializer(np.imag(bias_start))
-            b_r = tf.get_variable('b_real', [output_dim], initializer=init_r)
-            b_i = tf.get_variable('b_imag', [output_dim], initializer=init_i)
-            varlist.append(tf.complex(b_r, b_i))
-            y_r = tf.add(y_r, b_r)
-            y_i = tf.add(y_i, b_i)
 
     y = tf.complex(y_r, y_i)
 
@@ -425,12 +498,17 @@ def cconv2d(x, w, **kwargs):
 
     Parameters
     ----------
-    Same as tf.nn.conv2d
+    x : tf tensor
+        input tensor
+    w : tf tensor
+        weights tensor
+    kwargs : (key, val) pairs
+        Same as tf.nn.conv2d
 
     Returns
     -------
-    out : tensor
-        The result from applying the specified op
+    y : tf variable
+        Result of applying convolution to x
     """
     default_args = {
         'strides': [1, 1, 1, 1],
@@ -465,7 +543,12 @@ def cconv2d_transpose(y, w, output_shape, **kwargs):
 
     Parameters
     ----------
-    Same as tf.nn.conv2d_transpose
+    x : tf tensor
+        input tensor
+    w : tf tensor
+        weights tensor
+    kwargs : (key, val) pairs
+        Same as tf.nn.conv2d_transpose
 
     Notes
     -----
@@ -473,8 +556,8 @@ def cconv2d_transpose(y, w, output_shape, **kwargs):
 
     Returns
     -------
-    out : tensor
-        The result from applying the specified op
+    y : tf variable
+        Result of applying convolution to x
     """
     default_args = {
         'strides': [1, 1, 1, 1],
@@ -512,8 +595,8 @@ def separable_conv_with_pad(x, h_row, h_col, stride=1):
 
     Parameters
     ----------
-    x : tf tensor of shape [Batch, height, width, c]
-        The input tensor. Should be of shape
+    x : tf variable of shape [Batch, height, width, c]
+        The input variable. Should be of shape
     h_row : tf tensor of shape [1, l, c_in, c_out]
         The spatial row filter
     h_col : tf tensor of shape [l, 1, c_in, c_out]
@@ -523,7 +606,7 @@ def separable_conv_with_pad(x, h_row, h_col, stride=1):
 
     Returns
     -------
-    X : tf tensor
+    y : tf variable
         Result of applying convolution to x
     """
     # Do the row filter first:
@@ -535,10 +618,10 @@ def separable_conv_with_pad(x, h_row, h_col, stride=1):
     assert h_size[0] == 1
     pad = h_size[1] // 2
     if h_size[1] % 2 == 0:
-        X = tf.pad(x, [[0, 0], [0, 0], [pad - 1, pad], [0, 0]], 'SYMMETRIC')
+        y = tf.pad(x, [[0, 0], [0, 0], [pad - 1, pad], [0, 0]], 'SYMMETRIC')
     else:
-        X = tf.pad(x, [[0, 0], [0, 0], [pad, pad], [0, 0]], 'SYMMETRIC')
-    X = tf.nn.conv2d(X, h_row, strides=[1, stride, stride, 1],
+        y = tf.pad(x, [[0, 0], [0, 0], [pad, pad], [0, 0]], 'SYMMETRIC')
+    y = tf.nn.conv2d(y, h_row, strides=[1, stride, stride, 1],
                      padding='VALID')
 
     # Now do the column filtering
@@ -546,18 +629,19 @@ def separable_conv_with_pad(x, h_row, h_col, stride=1):
         h_size = h_col.get_shape().as_list()
     else:
         h_size = h_col.shape
+
     assert h_size[1] == 1
     pad = h_size[0] // 2
     if h_size[0] % 2 == 0:
-        X = tf.pad(X, [[0, 0], [pad - 1, pad], [0, 0], [0, 0]], 'SYMMETRIC')
+        y = tf.pad(y, [[0, 0], [pad - 1, pad], [0, 0], [0, 0]], 'SYMMETRIC')
     else:
-        X = tf.pad(X, [[0, 0], [pad, pad], [0, 0], [0, 0]], 'SYMMETRIC')
-    X = tf.nn.conv2d(X, h_col, strides=[1, stride, stride, 1],
+        y = tf.pad(y, [[0, 0], [pad, pad], [0, 0], [0, 0]], 'SYMMETRIC')
+    y = tf.nn.conv2d(y, h_col, strides=[1, stride, stride, 1],
                      padding='VALID')
 
-    assert x.get_shape().as_list()[1:3] == X.get_shape().as_list()[1:3]
+    assert x.get_shape().as_list()[1:3] == y.get_shape().as_list()[1:3]
 
-    return X
+    return y
 
 
 def _get_var_name(x):
@@ -590,21 +674,44 @@ def get_xavier_stddev(shape, uniform=False, factor=1.0, mode='FAN_AVG'):
           n = fan_out
       elif mode='FAN_AVG': # Average number of inputs and output connections.
           n = (fan_in + fan_out)/2.0
-          truncated_normal(shape, 0.0, stddev=sqrt(factor / n))
+          truncated_normal(shape, 0.0, stddev=sqrt(factor/n))
 
-    * To get [Delving Deep into Rectifiers](
-      http://arxiv.org/pdf/1502.01852v1.pdf), use (Default):<br/>
-      `factor=2.0 mode='FAN_IN' uniform=False`
-    * To get [Convolutional Architecture for Fast Feature Embedding](
-      http://arxiv.org/abs/1408.5093), use:<br/>
-      `factor=1.0 mode='FAN_IN' uniform=True`
-    * To get [Understanding the difficulty of training deep feedforward neural
-      networks](http://jmlr.org/proceedings/papers/v9/glorot10a/glorot10a.pdf),
-      use:<br/>
-      `factor=1.0 mode='FAN_AVG' uniform=True.`
-    * To get `xavier_initializer` use either:<br/>
-      `factor=1.0 mode='FAN_AVG' uniform=True`, or<br/>
-      `factor=1.0 mode='FAN_AVG' uniform=False`.
+    * To get `Delving Deep into Rectifiers`__, use::
+
+          factor=2.0
+          mode='FAN_IN'
+          uniform=False
+
+      __ http://arxiv.org/pdf/1502.01852v1.pdf
+
+    * To get `Convolutional Architecture for Fast Feature Embedding`__ , use::
+
+          factor=1.0
+          mode='FAN_IN'
+          uniform=True
+
+      __ http://arxiv.org/abs/1408.5093
+
+    * To get `Understanding the difficulty of training deep feedforward neural
+      networks`__ use::
+
+          factor=1.0
+          mode='FAN_AVG'
+          uniform=True
+
+      __ http://jmlr.org/proceedings/papers/v9/glorot10a/glorot10a.pdf
+
+    * To get `xavier_initializer` use either::
+
+        factor=1.0
+        mode='FAN_AVG'
+        uniform=True
+
+      or::
+
+        factor=1.0
+        mode='FAN_AVG'
+        uniform=False
 
     Parameters
     ----------
@@ -615,7 +722,11 @@ def get_xavier_stddev(shape, uniform=False, factor=1.0, mode='FAN_AVG'):
     uniform : bool
         Whether to use uniform or normal distributed random initialization.
     seed : int
-        Used to create random seeds. See @{tf.set_random_seed} for behavior.
+        Used to create random seeds. See tf.set_random_seed_
+        for behaviour.
+
+        .. _tf.set_random_seed: https://www.tensorflow.org/api_docs/python/tf/set_random_seed
+
     dtype : tf.dtype
         The data type. Only floating point types are supported.
 
@@ -667,9 +778,19 @@ def get_xavier_stddev(shape, uniform=False, factor=1.0, mode='FAN_AVG'):
 def real_reg(w, wd=0.01, norm=2):
     """ Apply regularization on real weights
 
+    norm can be any positive float. Of course the most commonly used values
+    would be 2 and 1 (for L2 and L1 regularization), but you can experiment by
+    making it some value in between. A value of p adds:
+
+    .. math::
+
+        wd \\times \\sum_{i} ||w_{i}||_{p}^{p}
+
+    to the REGULARIZATION_LOSSES collection.
+
     Parameters
     ----------
-    w : tf tensor
+    w : tf variable
         The weights to regularize
     wd : positive float, optional (default=0.01)
         Regularization parameter
@@ -679,11 +800,6 @@ def real_reg(w, wd=0.01, norm=2):
     Raises
     ------
     ValueError : If norm is less than 0
-
-    Notes
-    -----
-    Will add a tensor output representing the sum of l-p normed weights to the
-    REGULARIZATION_LOSSES graphkeys.
     """
     if wd is None or wd == 0:
         return
@@ -707,9 +823,19 @@ def real_reg(w, wd=0.01, norm=2):
 def complex_reg(w, wd=0.01, norm=1):
     """ Apply regularization on complex weights.
 
+    norm can be any positive float. Of course the most commonly used values
+    would be 2 and 1 (for L2 and L1 regularization), but you can experiment by
+    making it some value in between. A value of p adds:
+
+    .. math::
+
+        wd \\times \\sum_{i} ||w_{i}||_{p}^{p}
+
+    to the REGULARIZATION_LOSSES collection.
+
     Parameters
     ----------
-    w : tf tensor (dtype=complex)
+    w : tf variable (dtype=complex)
         The weights to regularize
     wd : positive float, optional (default=0.01)
         Regularization parameter
@@ -722,8 +848,8 @@ def complex_reg(w, wd=0.01, norm=1):
 
     Notes
     -----
-    Will add a tensor output representing the sum of l-p normed weights to the
-    REGULARIZATION_LOSSES graphkeys.
+    Can call this function with real weights too, making it perhaps a better
+    de-facto function to call, as it able to handle both cases.
     """
     if wd is None or wd == 0:
         return

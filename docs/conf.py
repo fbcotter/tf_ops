@@ -171,6 +171,8 @@ texinfo_documents = [
      'Miscellaneous'),
 ]
 
+# Autodoc settings
+autodoc_member_order = 'bysource'
 
 # Napoloen settings
 napoleon_google_docstring = False
