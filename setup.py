@@ -1,6 +1,5 @@
 import os
 from setuptools import setup
-import tf_ops
 
 
 # Utility function to read the README file.
@@ -9,6 +8,7 @@ import tf_ops
 # string in below ...
 def read(fname):
     return open(os.path.join(os.path.dirname(__file__), fname)).read()
+
 
 # Read metadata from version file
 classifiers = [
@@ -21,7 +21,7 @@ classifiers = [
 
 setup(
     name='tf_ops',
-    version=tf_ops.__version__,
+    version='0.0.1',
     author="Fergal Cotter",
     author_email="fbc23@cam.ac.uk",
     description=("Convenience Functions for Tensorflow"),

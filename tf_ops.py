@@ -6,8 +6,6 @@ import tensorflow as tf
 import math
 import numpy as np
 
-__version__ = "0.0.1"
-
 
 def variable_with_wd(name, shape, stddev=None, wd=None, norm=2):
     """ Helper to create an initialized Variable with weight decay.
