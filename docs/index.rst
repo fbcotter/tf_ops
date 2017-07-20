@@ -11,7 +11,6 @@ Welcome to tf_ops's documentation!
    :caption: Contents:
 
    readme
-   modules
 
 
 Indices and tables

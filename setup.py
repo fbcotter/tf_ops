@@ -30,13 +30,10 @@ setup(
     url="https://github.com/fbcotter/tf_ops.git",
     long_description=read('README.rst'),
     classifiers=classifiers,
-    command_options={
-        'build_sphinx': {
-            'source-dir': 'docs/',
-            'build-dir': 'build/docs',
-            'project': ('setup.py', 'tf_ops'),
-            'version': ('setup.py', tf_ops.__version__)}},
-    tests_require=["pytest"],
     py_modules=["tf_ops"],
-    install_requires=['numpy', 'six',],
+    install_requires=["numpy", "tensorflow>1.0.0"],
+    tests_require=["pytest"],
+    extras_require={
+        'docs': ['sphinx', 'docutils']
+    }
 )
