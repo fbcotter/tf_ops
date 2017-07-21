@@ -244,13 +244,15 @@ def convolution_transpose(x, output_dim, shape, size=3, stride=1,
 
         # Do the convolution
         y = tf.nn.conv2d_transpose(
-            x, w, output_dim, strides=[1, stride, stride, 1], padding='SAME')
+            x, w, shape, output_dim, strides=[1, stride, stride, 1],
+            padding='SAME')
 
         if with_relu:
             y = tf.nn.relu(y)
 
-    # Return the results
-    return y
+    # Return the results - reshape it to try give some more certainty to what
+    # the shape will be. will only work if the input shape was static
+    return tf.reshape(y, shape)
 
 
 def linear(x, output_dim, stddev=None, wd=0.01, norm=2, name='fc',
@@ -659,6 +661,14 @@ def _get_var_name(x):
     return last_one
 
 
+def get_static_shape_dyn_batch(x):
+    """Returns a tensor representing the static shape of x but keeping the batch
+    unkown"""
+    batch = tf.shape(x)[0]
+    static = x.get_shape()
+    return tf.concat([[batch], static[1:]], axis=0)
+
+
 def get_xavier_stddev(shape, uniform=False, factor=1.0, mode='FAN_AVG'):
     """Get the correct stddev for a set of weights
 
@@ -722,10 +732,10 @@ def get_xavier_stddev(shape, uniform=False, factor=1.0, mode='FAN_AVG'):
     uniform : bool
         Whether to use uniform or normal distributed random initialization.
     seed : int
-        Used to create random seeds. See tf.set_random_seed_
+        Used to create random seeds. See `tf.set_random_seed`__
         for behaviour.
 
-        .. _tf.set_random_seed: https://www.tensorflow.org/api_docs/python/tf/set_random_seed
+        __ https://www.tensorflow.org/api_docs/python/tf/set_random_seed
 
     dtype : tf.dtype
         The data type. Only floating point types are supported.
