@@ -244,7 +244,7 @@ def convolution_transpose(x, output_dim, shape, size=3, stride=1,
 
         # Do the convolution
         y = tf.nn.conv2d_transpose(
-            x, w, shape, output_dim, strides=[1, stride, stride, 1],
+            x, w, shape, strides=[1, stride, stride, 1],
             padding='SAME')
 
         if with_relu:
