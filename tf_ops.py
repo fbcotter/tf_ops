@@ -5,7 +5,7 @@ from __future__ import print_function
 import tensorflow as tf
 import math
 import numpy as np
-import logging
+import warnings
 from tensorflow.python.layers import convolutional, normalization, core
 from tensorflow.python.ops import init_ops
 
@@ -373,37 +373,191 @@ def linear(x, output_dim, stddev=None, wd=0.01, norm=2, name='fc',
     return y
 
 
-def _residual_core(x, out_filter, stride, train=True, wd=0.0001):
+def _residual_core(x, filters, stride=1, train=True, wd=0.0001):
     """ Core function of a residual unit.
 
     In -> batch norm -> relu -> conv -> bn -> relu -> conv
+
+    Parameters
+    ----------
+    x : tf tensor
+        Input to be modified
+    filters : int
+        Number of output filters (will be used for all convolutions in the
+        resnet core).
+    stride : int
+        Conv stride
+    train : bool or tf boolean tensor
+        Whether we are in the train phase or not. Can set to a tensorflow tensor
+        so that it can be modified on the fly.
+    wd : float
+        Weight decay term for the convolutional weights
     """
     init = init_ops.VarianceScaling(scale=1.0, mode='fan_out')
     reg = lambda w: real_reg(w, wd, norm=2)
-    in_filter = x.get_shape().as_list()[-1]
-    bn_class = lambda name: core.BatchNormalization(name)
+    bn_class = lambda name: normalization.BatchNormalization(name=name)
     conv_class = lambda name: convolutional.Conv2D(
-        out_filter, 3, (stride, stride), use_bias=False,
-        kernel_initalizer=init, kernel_regularizer=reg, name=name)
-
-    with tf.variable_scope('residual_only_activation'):
-        orig_x = x
-        bn = bn_class('init_bn')
-        x = bn_class.apply(x, train)
-        x = tf.nn.relu(x)
+        filters, 3, (stride, stride), use_bias=False, padding='same',
+        kernel_initializer=init, kernel_regularizer=reg, name=name)
 
     with tf.variable_scope('sub1'):
+        bn = bn_class('init_bn')
+        x = bn.apply(x, training=train)
+        x = tf.nn.relu(x)
         conv = conv_class('conv1')
         x = conv.apply(x)
 
     with tf.variable_scope('sub2'):
         bn = bn_class('bn2')
-        x = bn_class.apply(x, train)
+        x = bn.apply(x, training=train)
         x = tf.nn.relu(x)
         conv = conv_class('conv2')
         x = conv.apply(x)
 
     return x
+
+
+def residual(x, filters, stride=1, train=True, wd=0.0001):
+    """ Residual layer
+
+    Uses the _residual_core function to create F(x), then adds x to it.
+
+    Parameters
+    ----------
+    x : tf tensor
+        Input to be modified
+    filters : int
+        Number of output filters (will be used for all convolutions in the
+        resnet core).
+    stride : int
+        Conv stride
+    train : bool or tf boolean tensor
+        Whether we are in the train phase or not. Can set to a tensorflow tensor
+        so that it can be modified on the fly.
+    wd : float
+        Weight decay term for the convolutional weights
+
+    Notes
+    -----
+    When training, the moving_mean and moving_variance need to be updated. By
+    default the update ops are placed in tf.GraphKeys.UPDATE_OPS, so they need
+    to be added as a dependency to the train_op. For example::
+
+        update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
+        with tf.control_dependencies(update_ops):
+            train_op = optimizer.minimize(loss)
+    """
+    orig_x = x
+    x = _residual_core(x, filters, stride, train, wd)
+    return x + orig_x
+
+
+def lift_residual(x1, x2, filters, train=True, wd=0.0001):
+    """Define a Lifting Layer
+
+    The P and the U blocks for this lifting layer are non-linear functions.
+    These are the same form as the F(x) in a residual layer (i.e.  two
+    convolutions). In block form, a lifting layer looks like this::
+
+             _______________
+            |               |
+        x1->|---(+)---------|->d
+            |    ^      |   |
+            |    |      |   |
+            |   ---    ---  |
+            |  |-P |  | U | |
+            |   ---    ---  |
+            |    |      |   |
+            |    |      v   |
+        x2->|----------(+)--|->s
+            |_______________|
+
+    Parameters
+    ----------
+    x1 : tf tensor
+        Input tensor 1
+    x2 : tf tensor
+        Input tensor 2
+    filters : int
+        Number of output channels for Px2 and Ud
+    train : bool or tf boolean tensor
+        Whether we are in the train phase or not. Can set to a tensorflow tensor
+        so that it can be modified on the fly.
+    wd : float
+        Weight decay term for the convolutional weights
+
+    Returns
+    -------
+    d : tf tensor
+        Detail coefficients
+    s : tf tensor
+        Scale coefficients
+    """
+    with tf.variable_scope('P'):
+        # Calculate d = x1 - Px2
+        d = x1 - _residual_core(x2, filters, 1, train, wd)
+
+    with tf.variable_scope('U'):
+        # Calculate s = x2 + Ud
+        s = x2 + _residual_core(d, filters, 1, train, wd)
+
+    return d, s
+
+
+def lift_residual_inv(d, s, filters, train=True, wd=0.0001):
+    """Define the inverse of a lifting layer
+
+    We share the variables with the forward lifting.
+
+    In block form, the inverse lifting layer looks like this (note the sign swap
+    and flow direction reversal compared to the forward case)::
+
+             _______________
+            |               |
+        x1<-|---(+)---------|<-d
+            |    ^      |   |
+            |    |      |   |
+            |   ---    ---  |
+            |  | P |  |-U | |
+            |   ---    ---  |
+            |    |      |   |
+            |    |      v   |
+        x2<-|----------(+)--|<-s
+            |_______________|
+
+
+    Parameters
+    ----------
+    d : tf tensor
+        Input tensor 1
+    s : tf tensor
+        Input tensor 2
+    filters : int
+        Number of output channels for Px2 and Ud
+    train : bool or tf boolean tensor
+        Whether we are in the train phase or not. Can set to a tensorflow tensor
+        so that it can be modified on the fly.
+    wd : float
+        Weight decay term for the convolutional weights
+
+    Returns
+    -------
+    x1 : tf tensor
+        Reconstructed x1
+    x2 : tf tensor
+        Reconstructed x2
+    """
+    with tf.variable_scope('U') as scope:
+        # Calculate x2 = s - Ud
+        scope.reuse_variables()
+        x2 = s - _residual_core(d, filters, 1, train, wd)
+
+    with tf.variable_scope('P') as scope:
+        # Calculate x_e = d + Px2
+        scope.reuse_variables()
+        x1 = d + _residual_core(x2, filters, 1, train, wd)
+
+    return x1, x2
 
 
 def complex_convolution(x, output_dim, size=3, stride=1, stddev=None,

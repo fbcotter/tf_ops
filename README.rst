@@ -2,12 +2,8 @@ Fergal's TF Ops
 ===============
 This library provides some convenience functions for doing some common
 operations in tensorflow. I recommend you also look at the tf.layers module, as
-there is a lot of overlap; I use these functions as some of those in `tf.layers
-<https://www.tensorflow.org/api_docs/python/tf/layers>`_ are a little bit 
-unclear about how they work.
-
-In addition, I define operations to do complex valued convolution (complex 
-inputs and complex weights).
+there is a lot of overlap; this module aims to fill in the gaps that exist in
+tf.layers package.
 
 If you are using tensorflow on a shared GPU server and want to control how many
 GPUs it grabs, have a look `py3nvml <https://github.com/fbcotter/py3nvml.git>`_,

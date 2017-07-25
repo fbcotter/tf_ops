@@ -9,7 +9,7 @@ weights, do the intended layer, and can add regularizations, non-linearities,
 batch-norm and other helpful features.
 
 .. automodule:: tf_ops
-    :members: convolution, convolution_transpose, linear, complex_convolution,
+    :members: residual, lift_residual, lift_residual_inv, complex_convolution, 
       complex_convolution_transpose
     :show-inheritance:
 
