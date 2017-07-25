@@ -5,6 +5,9 @@ from __future__ import print_function
 import tensorflow as tf
 import math
 import numpy as np
+import logging
+from tensorflow.python.layers import convolutional, normalization, core
+from tensorflow.python.ops import init_ops
 
 
 def variable_with_wd(name, shape, stddev=None, wd=None, norm=2):
@@ -49,7 +52,8 @@ def variable_with_wd(name, shape, stddev=None, wd=None, norm=2):
     var_after = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES)
 
     if len(var_before) != len(var_after):
-        complex_reg(var, wd, norm)
+        reg_loss = complex_reg(var, wd, norm)
+        tf.add_to_collection(tf.GraphKeys.REGULARIZATION_LOSSES, reg_loss)
         variable_summaries(var, name)
 
     return var
@@ -115,10 +119,12 @@ def convolution(x, output_dim, size=3, stride=1, stddev=None, wd=None,
                 with_bias=False, bias_start=0.):
     """Function to do a simple convolutional layer
 
-    A bit like tensorflow's tf.nn.convolution function, but a little more
-    transparent for my liking. Will create variables depending on the input size
-    and the output_dim. Adds the variables to tf.GraphKeys.wdULARIZATION_LOSSES
-    if the wd parameter is positive.
+    Deprecated: tensorflow's tf.layers.convolution function is a good
+    replacement.
+
+    Will create variables depending on the input size and the output_dim. Adds
+    the variables to tf.GraphKeys.REGULARIZATION_LOSSES if the wd parameter is
+    positive.
 
     Parameters
     ----------
@@ -146,6 +152,8 @@ def convolution(x, output_dim, size=3, stride=1, stddev=None, wd=None,
     bias_start : float
         If a bias is used, what to initialize it to.
     """
+    warnings.warn("Deprecated. tf.python.layers.convolution.Conv2D",
+                  DeprecationWarning)
 
     varlist = []
     with tf.variable_scope(name):
@@ -234,6 +242,8 @@ def convolution_transpose(x, output_dim, shape, size=3, stride=1,
     y : tf variable
         Result of applying complex convolution transpose to x
     """
+    warnings.warn("Deprecated. Use tf.python.layers.convolution.Conv2DTranspose",
+                  DeprecationWarning)
 
     varlist = []
     with tf.variable_scope(name):
@@ -259,6 +269,9 @@ def linear(x, output_dim, stddev=None, wd=0.01, norm=2, name='fc',
            with_relu=False, with_bias=False, bias_start=0.0,
            with_drop=False, drop_p=0.2, training=True):
     """Function to do a simple fully connected layer
+
+    Deprecated. tf.python.layers.core.Dense class is just as good/a little
+    better.
 
     A bit like tensorflow's tf.nn.dense function, but a little more
     transparent for my liking. Will create variables depending on the input size
@@ -310,7 +323,8 @@ def linear(x, output_dim, stddev=None, wd=0.01, norm=2, name='fc',
     y : tf variable
         Result of applying fully connected layer to x
     """
-
+    warnings.warn("Deprecated. Use tf.python.layers.core.Dense",
+                  DeprecationWarning)
     varlist = []
     with tf.variable_scope(name):
         # Get the variables needed for fully connected layer
@@ -357,6 +371,39 @@ def linear(x, output_dim, stddev=None, wd=0.01, norm=2, name='fc',
 
     # Return the results
     return y
+
+
+def _residual_core(x, out_filter, stride, train=True, wd=0.0001):
+    """ Core function of a residual unit.
+
+    In -> batch norm -> relu -> conv -> bn -> relu -> conv
+    """
+    init = init_ops.VarianceScaling(scale=1.0, mode='fan_out')
+    reg = lambda w: real_reg(w, wd, norm=2)
+    in_filter = x.get_shape().as_list()[-1]
+    bn_class = lambda name: core.BatchNormalization(name)
+    conv_class = lambda name: convolutional.Conv2D(
+        out_filter, 3, (stride, stride), use_bias=False,
+        kernel_initalizer=init, kernel_regularizer=reg, name=name)
+
+    with tf.variable_scope('residual_only_activation'):
+        orig_x = x
+        bn = bn_class('init_bn')
+        x = bn_class.apply(x, train)
+        x = tf.nn.relu(x)
+
+    with tf.variable_scope('sub1'):
+        conv = conv_class('conv1')
+        x = conv.apply(x)
+
+    with tf.variable_scope('sub2'):
+        bn = bn_class('bn2')
+        x = bn_class.apply(x, train)
+        x = tf.nn.relu(x)
+        conv = conv_class('conv2')
+        x = conv.apply(x)
+
+    return x
 
 
 def complex_convolution(x, output_dim, size=3, stride=1, stddev=None,
@@ -790,13 +837,11 @@ def real_reg(w, wd=0.01, norm=2):
 
     norm can be any positive float. Of course the most commonly used values
     would be 2 and 1 (for L2 and L1 regularization), but you can experiment by
-    making it some value in between. A value of p adds:
+    making it some value in between. A value of p returns:
 
     .. math::
 
         wd \\times \\sum_{i} ||w_{i}||_{p}^{p}
-
-    to the REGULARIZATION_LOSSES collection.
 
     Parameters
     ----------
@@ -806,6 +851,12 @@ def real_reg(w, wd=0.01, norm=2):
         Regularization parameter
     norm : positive float, optional (default=2)
         The norm to use for regularization. E.g. set norm=1 for the L1 norm.
+
+    Returns
+    -------
+    reg_loss : tf variable
+        The loss. This method does not add anything to the REGULARIZATION_LOSSES
+        collection. The calling function needs to do that.
 
     Raises
     ------
@@ -827,7 +878,8 @@ def real_reg(w, wd=0.01, norm=2):
         reg_loss = (1/norm) * tf.reduce_sum(mag**norm)
 
     reg_loss = tf.multiply(reg_loss, wd, name='weight_loss')
-    tf.add_to_collection(tf.GraphKeys.REGULARIZATION_LOSSES, reg_loss)
+    return reg_loss
+    #  tf.add_to_collection(tf.GraphKeys.REGULARIZATION_LOSSES, reg_loss)
 
 
 def complex_reg(w, wd=0.01, norm=1):
@@ -835,13 +887,12 @@ def complex_reg(w, wd=0.01, norm=1):
 
     norm can be any positive float. Of course the most commonly used values
     would be 2 and 1 (for L2 and L1 regularization), but you can experiment by
-    making it some value in between. A value of p adds:
+    making it some value in between. A value of p returns:
 
     .. math::
 
         wd \\times \\sum_{i} ||w_{i}||_{p}^{p}
 
-    to the REGULARIZATION_LOSSES collection.
 
     Parameters
     ----------
@@ -851,6 +902,12 @@ def complex_reg(w, wd=0.01, norm=1):
         Regularization parameter
     norm : positive float, optional (default=1)
         The norm to use for regularization. E.g. set norm=1 for the L1 norm.
+
+    Returns
+    -------
+    reg_loss : tf variable
+        The loss. This method does not add anything to the REGULARIZATION_LOSSES
+        collection. The calling function needs to do that.
 
     Raises
     ------
@@ -869,8 +926,7 @@ def complex_reg(w, wd=0.01, norm=1):
     # Check the weights input. Use the real regularizer if weights are purely
     # real
     if w.dtype.is_floating:
-        real_reg(w, wd, norm)
-        return
+        return real_reg(w, wd, norm)
 
     # L2 is a special regularization where we can regularize the real and
     # imaginary components independently. All other types we need to combine
@@ -886,4 +942,5 @@ def complex_reg(w, wd=0.01, norm=1):
         reg_loss = (1/norm) * tf.reduce_sum(mag**norm)
 
     reg_loss = tf.multiply(reg_loss, wd, name='weight_loss')
-    tf.add_to_collection(tf.GraphKeys.REGULARIZATION_LOSSES, reg_loss)
+    return reg_loss
+    #  tf.add_to_collection(tf.GraphKeys.REGULARIZATION_LOSSES, reg_loss)
