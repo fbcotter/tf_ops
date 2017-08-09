@@ -6,14 +6,12 @@ from __future__ import print_function
 
 import tensorflow as tf
 import math
-import os
 import warnings
 from tensorflow.python.layers import convolutional, normalization
 from tensorflow.python.ops import init_ops
 
 __author__ = "Fergal Cotter"
-# Imports the __version__ variable
-exec(open(os.path.join(os.path.dirname(__file__), 'version.py')).read())
+__version__ = "0.0.2"
 __version_info__ = tuple([int(d) for d in __version__.split(".")])  # noqa
 
 
