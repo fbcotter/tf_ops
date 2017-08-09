@@ -11,8 +11,8 @@ from tensorflow.python.layers import convolutional, normalization
 from tensorflow.python.ops import init_ops
 
 __author__ = "Fergal Cotter"
-exec(open('version.py').read())  # Imports the __version__ variable
-__version_info__ = tuple([int(d) for d in '.'.split(__version__)])  # noqa
+exec(open("./version.py").read())  # Imports the __version__ variable
+__version_info__ = tuple([int(d) for d in __version__.split(".")])  # noqa
 
 
 def variable_with_wd(name, shape, stddev=None, wd=None, norm=2):

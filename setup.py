@@ -1,6 +1,6 @@
 import os
 from setuptools import setup
-exec(open('version.py').read())  # Imports the __version__ variable
+exec(open('./version.py').read())  # Imports the __version__ variable
 
 
 # Utility function to read the README file.
