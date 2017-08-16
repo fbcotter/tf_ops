@@ -30,6 +30,16 @@ classifiers = [
     "Topic :: Utilities",
 ]
 
+install_requires = [
+    'numpy',
+]
+
+extras_require = {
+    'docs': ['sphinx', 'docutils', 'matplotlib', 'ipython', ],
+    'tf': ['tensorflow>=1.1.0'],
+    'tf_gpu': ['tensorflow-gpu>=1.1.0'],
+}
+
 setup(
     name='tf_ops',
     version=get_version(),
@@ -42,9 +52,7 @@ setup(
     long_description=read('README.rst'),
     classifiers=classifiers,
     py_modules=["tf_ops"],
-    install_requires=["numpy", "tensorflow>1.0.0"],
+    install_requires=install_requires,
     tests_require=["pytest"],
-    extras_require={
-        'docs': ['sphinx', 'docutils']
-    }
+    extras_require=extras_require
 )
