@@ -1282,7 +1282,7 @@ def real_reg(w, wd=0.01, norm=2):
     ------
     ValueError : If norm is less than 0
     """
-    if wd is None or wd == 0:
+    if wd is None or wd == 0 or norm is None:
         return
     if norm <= 0:
         raise ValueError('Can only take positive norms, not {}'.format(norm))
@@ -1338,7 +1338,7 @@ def complex_reg(w, wd=0.01, norm=1):
     Can call this function with real weights too, making it perhaps a better
     de-facto function to call, as it able to handle both cases.
     """
-    if wd is None or wd == 0:
+    if wd is None or wd == 0 or norm is None:
         return
     if norm <= 0:
         raise ValueError('Can only take positive norms, not {}'.format(norm))
