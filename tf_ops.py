@@ -74,12 +74,11 @@ def variable_summaries(var, name='summaries'):
     name : str
         scope under which you want to add your summary ops
     """
-    with tf.name_scope(name):
+    with tf.name_scope(name + '_summaries'):
         mean = tf.reduce_mean(var)
         tf.summary.scalar('mean', mean)
-        with tf.name_scope('stddev'):
-            stddev = tf.sqrt(tf.reduce_mean(tf.square(var - mean)))
-        tf.summary.scalar('stddev', stddev)
+        stddev = tf.sqrt(tf.reduce_mean(tf.square(var - mean)), name='stddev')
+        tf.summary.scalar('standard_deviation', stddev)
         tf.summary.scalar('max', tf.reduce_max(var))
         tf.summary.scalar('min', tf.reduce_min(var))
         tf.summary.histogram('histogram', var)
@@ -110,12 +109,18 @@ def loss(labels, logits, λ=1):
         For optimization, only need to use the first element in the tuple. I
         return the other two for displaying purposes.
     """
-    cross_entropy = tf.nn.softmax_cross_entropy_with_logits(
-        labels=labels, logits=logits)
-    data_loss = tf.reduce_mean(cross_entropy, name='cross_entropy')
-    reg_variables = tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES)
-    reg_term = tf.reduce_sum(reg_variables)
-    loss = data_loss + λ*reg_term
+    with tf.variable_scope('data_loss'):
+        tf.summary.histogram('logits', logits)
+        tf.summary.histogram('softmax', tf.nn.softmax(logits))
+        cross_entropy = tf.nn.softmax_cross_entropy_with_logits(
+            labels=labels, logits=logits)
+        data_loss = tf.reduce_mean(cross_entropy, name='cross_entropy')
+    with tf.variable_scope('reg_loss'):
+        reg_variables = tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES)
+        reg_term = tf.reduce_sum(reg_variables)
+
+    with tf.variable_scope('loss'):
+        loss = data_loss + λ*reg_term
     return loss, data_loss, reg_term
 
 
@@ -364,14 +369,12 @@ def linear(x, output_dim, stddev=None, wd=0.01, norm=2, name='fc',
             varlist.append(b)
 
         if with_relu:
-            y = tf.nn.relu(y)
+            y = tf.nn.relu(y, name='relu')
 
         # Do dropout (Untested)
         if with_drop:
-            y = tf.layers.dropout(
-                y,
-                rate=drop_p,
-                training=training)
+            y = tf.layers.dropout(y, rate=drop_p, training=training,
+                                  name='dropout')
 
     # Return the results
     return y
