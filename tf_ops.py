@@ -11,7 +11,7 @@ from tensorflow.python.layers import convolutional, normalization
 from tensorflow.python.ops import init_ops
 
 __author__ = "Fergal Cotter"
-__version__ = "0.0.2"
+__version__ = "0.0.3"
 __version_info__ = tuple([int(d) for d in __version__.split(".")])  # noqa
 
 
