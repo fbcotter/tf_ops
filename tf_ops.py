@@ -15,6 +15,98 @@ __version__ = "0.0.3"
 __version_info__ = tuple([int(d) for d in __version__.split(".")])  # noqa
 
 
+def build_optimizer(opt_method, lr, loss, max_gradient_norm=None,
+                    global_step=None, decay_steps=None):
+    """ Build an optimizer and return a training op.
+
+    Will also add checks for Nans in the gradient, and add some monitoring to
+    tensorboard.
+
+    Parameters
+    ----------
+    lr : float
+        Learning rate for the optimizer
+    loss : tf.Tensor
+        Tensor containing the loss operation
+    max_gradient_norm : float or None
+        What the gradients should be clipped to. If None, no clipping used.
+    global_step : tf.Variable or None
+        Variable holding the global step
+    decay_steps : int
+        For sgd only. After how many steps to decay the learning rate.
+
+    Returns
+    -------
+    train_op : tf op
+        An op that can be run in a session to apply gradients to the trainable
+        variables.
+    """
+
+    with tf.variable_scope('optimizer'):
+        # Build the optimizer
+        if opt_method == 'adam':
+            print('Optimizing with Adam')
+            opt = tf.train.AdamOptimizer(lr, epsilon=1e-6)
+        elif opt_method == 'momentum':
+            print('Optimizing with momentum')
+            opt = tf.train.MomentumOptimizer(lr,
+                                             momentum=0.9,
+                                             use_nesterov=True)
+        elif opt_method == 'sgd':
+            # Decay the learning rate exponentially based on the number of steps
+            if decay_steps is not None:
+                lr = tf.train.exponential_decay(lr,
+                                                global_step,
+                                                decay_steps=500*100,
+                                                decay_rate=0.1,
+                                                staircase=True)
+            opt = tf.train.GradientDescentOptimizer(lr)
+            tf.summary.scalar('learning_rate', lr)
+
+        params = tf.trainable_variables()
+        gradients = tf.gradients(loss, params)
+
+        # Collect the gradients and clip them
+        if max_gradient_norm is not None:
+            gradients, norm = tf.clip_by_global_norm(
+                gradients, max_gradient_norm)
+        else:
+            norm = tf.sqrt(tf.reduce_sum(
+                [tf.reduce_sum(g**2) for g in gradients]))
+
+        # Add checks on the gradients for Nans
+        grad_check = [tf.check_numerics(g, '{} gradient nan'.format(p.name)) for
+                      g, p in zip(gradients, params) if g is not None]
+
+        grad_check.append(tf.check_numerics(norm, 'global clip val nan'))
+
+        # Ensure the gradient check is done before applying the gradients
+        with tf.control_dependencies(grad_check):
+            train_op = opt.apply_gradients(
+                zip(gradients, params), global_step=global_step)
+
+    # Function to make a nicer name for display
+    def strip_name(name):
+        name = name.split(':')[0].split('/')
+        if 'fwd' in name:
+            name.remove('fwd')
+        if 'batch_normalization' in name:
+            name.remove('batch_normalization')
+        return '/'.join(name)
+
+    # Add some tensorboard logging
+    with tf.variable_scope('grads'):
+        tf.summary.scalar('all', norm)
+        [tf.summary.scalar('{}'.format(strip_name(p.name)), tf.norm(g))
+         for g, p in zip(gradients, params) if g is not None]
+
+        # Add histograms for gradients.
+        [tf.summary.histogram('{}'.format(strip_name(p.name)), g)
+         for g, p in zip(gradients, params) if g is not None]
+
+    return train_op
+
+
 def variable_with_wd(name, shape, stddev=None, wd=None, norm=2):
     """ Helper to create an initialized variable with weight decay.
 
