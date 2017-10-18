@@ -1,0 +1,4 @@
+include tf_ops/filters/corner1.npy
+include tf_ops/filters/corner2.npy
+include tf_ops/filters/corner3.npy
+include tf_ops/filters/corner4.npy

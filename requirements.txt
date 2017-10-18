@@ -1,4 +1,5 @@
 tensorflow
 numpy
 pytest
+dtcwt
 -r docs/requirements.txt
