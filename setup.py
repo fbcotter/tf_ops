@@ -1,5 +1,5 @@
 import os
-from setuptools import setup
+from setuptools import setup, find_packages
 # Imports the __version__ variable
 #  exec(open(os.path.join(os.path.dirname(__file__), 'version.py')).read())
 
@@ -14,7 +14,7 @@ def read(fname):
 
 # Read metadata from version file
 def get_version():
-    with open("tf_ops.py") as f:
+    with open("tf_ops/__init__.py") as f:
         for line in f:
             if line.startswith("__version__"):
                 return line[15:-2]
@@ -49,9 +49,9 @@ setup(
     license="MIT",
     keywords="tensorflow, complex convolution",
     url="https://github.com/fbcotter/tf_ops.git",
+    packages=find_packages(exclude=["tests.*", "tests"]),
     long_description=read('README.rst'),
     classifiers=classifiers,
-    py_modules=["tf_ops"],
     install_requires=install_requires,
     tests_require=["pytest"],
     extras_require=extras_require

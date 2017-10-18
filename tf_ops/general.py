@@ -6,13 +6,9 @@ from __future__ import print_function
 
 import tensorflow as tf
 import math
-import warnings
 from tensorflow.python.layers import convolutional, normalization
 from tensorflow.python.ops import init_ops
-
-__author__ = "Fergal Cotter"
-__version__ = "0.0.4"
-__version_info__ = tuple([int(d) for d in __version__.split(".")])  # noqa
+from tf_ops.wave_ops import lazy_wavelet, lazy_wavelet_inv
 
 
 def build_optimizer(opt_method, lr, loss, max_gradient_norm=None,
@@ -24,6 +20,8 @@ def build_optimizer(opt_method, lr, loss, max_gradient_norm=None,
 
     Parameters
     ----------
+    opt_method : str
+        Either 'adam', 'sgd', or 'momentum'
     lr : float
         Learning rate for the optimizer
     loss : tf.Tensor
@@ -72,7 +70,7 @@ def build_optimizer(opt_method, lr, loss, max_gradient_norm=None,
                 gradients, max_gradient_norm)
         else:
             norm = tf.sqrt(tf.reduce_sum(
-                [tf.reduce_sum(g**2) for g in gradients]))
+                [tf.reduce_sum(g**2) for g in gradients if g is not None]))
 
         # Add checks on the gradients for Nans
         grad_check = [tf.check_numerics(g, '{} gradient nan'.format(p.name)) for
@@ -176,7 +174,7 @@ def variable_summaries(var, name='summaries'):
         tf.summary.histogram('histogram', var)
 
 
-def loss(labels, logits, λ=1):
+def loss(labels, logits, one_hot=True, num_classes=None, λ=1):
     """ Compute sum of data + regularization losses.
 
     loss = data_loss + λ * reg_losses
@@ -186,8 +184,14 @@ def loss(labels, logits, λ=1):
 
     Parameters
     ----------
-    Y : ndarray(dtype=float, ndim=(N,C))
-        The vector of labels. It must be a one-hot vector
+    labels : ndarray(dtype=float, ndim=(N,C))
+        The vector of labels.
+    one_hot : bool
+        True if the labels input is one_hot.
+    num_classes : int
+        Needed if the labels aren't one-hot already.
+    logits : tf.Variable
+        Logit outputs from the neural net.
     λ : float
         Multiplier to use on all regularization losses. Be careful not
         to apply things twice, as all the functions in this module typically set
@@ -204,6 +208,9 @@ def loss(labels, logits, λ=1):
     with tf.variable_scope('data_loss'):
         tf.summary.histogram('logits', logits)
         tf.summary.histogram('softmax', tf.nn.softmax(logits))
+        if not one_hot:
+            labels = tf.one_hot(labels, depth=num_classes, axis=-1)
+
         cross_entropy = tf.nn.softmax_cross_entropy_with_logits(
             labels=labels, logits=logits)
         data_loss = tf.reduce_mean(cross_entropy, name='cross_entropy')
@@ -213,263 +220,8 @@ def loss(labels, logits, λ=1):
 
     with tf.variable_scope('loss'):
         loss = data_loss + λ*reg_term
+
     return loss, data_loss, reg_term
-
-
-def convolution(x, output_dim, size=3, stride=1, stddev=None, wd=None,
-                norm=2, name='conv2d', with_relu=False, with_bn=False,
-                with_bias=False, bias_start=0.):
-    """Function to do a simple convolutional layer
-
-    Deprecated: tensorflow's tf.layers.convolution function is a good
-    replacement.
-
-    Will create variables depending on the input size and the output_dim. Adds
-    the variables to tf.GraphKeys.REGULARIZATION_LOSSES if the wd parameter is
-    positive.
-
-    Parameters
-    ----------
-    x : :py:class:`tf.Tensor`
-        The input variable
-    output_dim : int
-        number of filters to have
-    size : int
-        kernel spatial support
-    stride : int
-        what stride to use for convolution
-    stddev : None or positive float
-        Initialization stddev. If set to None, will use
-        :py:func:`get_xavier_stddev`
-    wd : None or positive float
-        What weight decay to use
-    norm : positive float
-    name : str
-        The tensorflow variable scope to create the variables under
-    with_relu : bool
-        Use a relu after convolution
-    with_bias : bool
-        add a bias after convolution? (this will be ignored if batch norm is
-        used)
-    bias_start : float
-        If a bias is used, what to initialize it to.
-    """
-    warnings.warn("Deprecated. tf.python.layers.convolution.Conv2D",
-                  DeprecationWarning)
-
-    varlist = []
-    with tf.variable_scope(name):
-        # Get the variables needed for convolution
-        w_shape = (size, size, x.get_shape().as_list()[-1], output_dim)
-        w = variable_with_wd('w', w_shape, stddev, wd, norm)
-        varlist.append(w)
-
-        # Do the convolution
-        y = tf.nn.conv2d(x, w, strides=[1, stride, stride, 1],
-                         padding='SAME')
-        if with_bias:
-            init = tf.constant_initializer(bias_start)
-            b = tf.get_variable('b', [output_dim], initializer=init)
-            y = tf.add(y, b)
-            varlist.append(b)
-
-        # TODO - implement batchnorm and test. Remember to not use a bias if
-        # we're using batch norm.
-        #
-        # Do batch normalization - remember it is before the relu
-        #  if with_bn:
-            #  var_after = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES)
-            #  y = tf.layers.batch_normalization(
-                #  y,
-                #  axis=-1,
-                #  momentum=0.99,  # Moving average of the parameters
-                #  epsilon=0.001,  # Float added to variance
-                #  training=train_phase,
-                #  reuse=None)
-            #  var_after2 = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES)
-            #  bn_vars = [x for x in var_after2 if (x not in var_after)]
-            #  # Add variable summaries for these weights
-            #  [variable_summaries(x, _get_var_name(x)) for x in bn_vars]
-            #  varlist.append(bn_vars)
-
-        if with_relu:
-            y = tf.nn.relu(y)
-
-    # Return the results
-    return y
-
-
-def convolution_transpose(x, output_dim, shape, size=3, stride=1,
-                          stddev=None, wd=0.0, norm=1, name='conv2d',
-                          with_relu=False):
-    """Function to do the transpose of convolution
-
-    In a similar way we have a convenience function, :py:func:`convolution` to
-    wrap tf.nn.conv2d (create variables, add a relu, etc.), this function wraps
-    tf.nn.conv2d_transpose. If you want more fine control over things, use
-    tf.nn.conv2d_transpose directly, but for most purposes, this function should
-    do what you need. Adds the variables to tf.GraphKeys.REGULARIZATION_LOSSES
-    if the wd parameter is positive.
-
-    I do not subtract the bias after doing transpose convolution.
-
-    Parameters
-    ----------
-    x : :py:class:`tf.Tensor`
-        The input variable
-    output_dim : int
-        number of filters to have
-    output_shape : list-like or 1-d Tensor
-        list/tensor representing the output shape of the deconvolution op
-    size : int
-        kernel spatial support
-    stride : int
-        what stride to use for convolution
-    stddev : None or positive float
-        Initialization stddev. If set to None, will use
-        :py:func:`get_xavier_stddev`
-    wd : None or positive float
-        What weight decay to use
-    norm : positive float
-        Which regularizer to apply. E.g. norm=2 uses L2 regularization, and
-        norm=p adds :math:`wd \\times ||w||_{p}^{p}` to the
-        REGULARIZATION_LOSSES. See :py:func:`real_reg`.
-    name : str
-        The tensorflow variable scope to create the variables under
-    with_relu : bool
-        Use a relu after convolution
-
-    Returns
-    -------
-    y : :py:class:`tf.Tensor`
-        Result of applying complex convolution transpose to x
-    """
-    warnings.warn("Deprecated. Use tf.python.layers", DeprecationWarning)
-
-    varlist = []
-    with tf.variable_scope(name):
-        # Define the real and imaginary components of the weights
-        w_shape = (size, size, x.get_shape().as_list()[-1], output_dim)
-        w = variable_with_wd('w', w_shape, stddev, wd, norm)
-        varlist.append(w)
-
-        # Do the convolution
-        y = tf.nn.conv2d_transpose(
-            x, w, shape, strides=[1, stride, stride, 1],
-            padding='SAME')
-
-        if with_relu:
-            y = tf.nn.relu(y)
-
-    # Return the results - reshape it to try give some more certainty to what
-    # the shape will be. will only work if the input shape was static
-    return tf.reshape(y, shape)
-
-
-def linear(x, output_dim, stddev=None, wd=0.01, norm=2, name='fc',
-           with_relu=False, with_bias=False, bias_start=0.0,
-           with_drop=False, drop_p=0.2, training=True):
-    """Function to do a simple fully connected layer
-
-    Deprecated. tf.python.layers.core.Dense class is just as good/a little
-    better.
-
-    A bit like tensorflow's tf.nn.dense function, but a little more
-    transparent for my liking. Will create variables depending on the input size
-    and the output_dim. Adds the variables to tf.GraphKeys.REGULARIZATION_LOSSES
-    if the wd parameter is positive.
-
-    Parameters
-    ----------
-    x : :py:class:`tf.Tensor`
-        The input variable
-    output_dim : int
-        number of filters to have
-    size : int
-        kernel spatial support
-    stride : int
-        what stride to use for convolution
-    stddev : None or positive float
-        Initialization stddev. If set to None, will use
-        :py:func:`get_xavier_stddev`
-    wd : positive float
-        Regularization power (e.g. set to 2 for L2 Regularization)
-    wd : None or positive float
-        What weight decay to use
-    norm : positive float
-        Which regularizer to apply. E.g. norm=2 uses L2 regularization, and
-        norm=p adds :math:`wd \\times ||w||_{p}^{p}` to the
-        REGULARIZATION_LOSSES. See :py:func:`real_reg`.
-    name : str
-        The tensorflow variable scope to create the variables under
-    with_relu : bool
-    with_bias : bool
-        add a bias after convolution? (this will be ignored if batch norm is
-        used)
-    bias_start : float
-        If a bias is used, what to initialize it to.
-    with_drop: bool
-        Use dropout (NOT TESTED)
-    drop_p : float
-        Chance of being dropped
-    training : python bool or tf bool tensor
-        If training is true, dropout will be turned on. Feeding a python bool
-        will freeze the state for the entire run. If you want to be able to
-        change it on the fly, provide training as a tf tensor (e.g. a
-        placeholder) that contains a single boolean value that can be changed on
-        the fly.
-
-    Returns
-    -------
-    y : :py:class:`tf.Tensor`
-        Result of applying fully connected layer to x
-    """
-    warnings.warn("Deprecated. Use tf.python.layers.core.Dense",
-                  DeprecationWarning)
-    varlist = []
-    with tf.variable_scope(name):
-        # Get the variables needed for fully connected layer
-        w_shape = [x.get_shape().as_list()[-1], output_dim]
-        w = variable_with_wd('w', w_shape, stddev, wd, norm)
-        varlist.append(w)
-
-        # Do the fully connected layer
-        y = tf.matmul(x, w)
-
-        # TODO - implement batch norm. Remember to not use a bias if we're using
-        # batch norm.
-        #  if with_bn:
-            #  var_after = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES)
-            #  y = tf.layers.batch_normalization(
-                #  y,
-                #  axis=-1,
-                #  momentum=0.99,  # Moving average of the parameters
-                #  epsilon=0.001,  # Float added to variance
-                #  training=train_phase,
-                #  reuse=None)
-            #  var_after2 = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES)
-            #  bn_vars = [x for x in var_after2 if (x not in var_after)]
-            #  # Add variable summaries for these weights
-            #  [variable_summaries(x, _get_var_name(x)) for x in bn_vars]
-            #  varlist.append(bn_vars)
-
-        if with_bias:
-            init = tf.constant_initializer(bias_start)
-            b = tf.get_variable('b', [output_dim], initializer=init)
-            variable_summaries(b, 'b')
-            y = tf.add(y, b)
-            varlist.append(b)
-
-        if with_relu:
-            y = tf.nn.relu(y, name='relu')
-
-        # Do dropout (Untested)
-        if with_drop:
-            y = tf.layers.dropout(y, rate=drop_p, training=training,
-                                  name='dropout')
-
-    # Return the results
-    return y
 
 
 def _residual_core(x, filters, stride=1, train=True, wd=0.0001):
@@ -549,134 +301,6 @@ def residual(x, filters, stride=1, train=True, wd=0.0001):
     orig_x = x
     x = _residual_core(x, filters, stride, train, wd)
     return x + orig_x
-
-
-def lazy_wavelet(x):
-    """ Performs a lazy wavelet split on a tensor.
-
-    Designed to work nicely with the lifting blocks.
-
-    Output will have 4 times as many channels as the input, but will have one
-    quarter the spatial size.  I.e. if x is a tensor of size (batch, h, w, c),
-    then the output will be of size (batch, h/2, w/2 4*c). The first c channels
-    will be the A samples::
-
-        Input image
-
-        A B A B A B ...
-        C D C D C D ...
-        A B A B A B ...
-        ...
-
-    Then the next c channels will be from the B channels, and so on.
-
-    Notes
-    -----
-    If the spatial size is not even, then will mirror to make it even before
-    downsampling.
-
-    Parameters
-    ----------
-    x : tf tensor
-        Input to apply lazy wavelet transform to.
-
-    Returns
-    -------
-    y : tf tensor
-        Result after applying transform.
-    """
-    xshape = x.get_shape().as_list()
-    pad = [[0,0], [0,0], [0,0], [0,0]]
-    if xshape[1] % 2 == 1:
-        pad[1][1] = 1
-    if xshape[2] % 2 == 1:
-        pad[2][1] = 1
-    x = tf.pad(x, pad, 'SYMMETRIC')
-    A, B = x[:, ::2, ::2], x[:, ::2, 1::2]
-    C, D = x[:, 1::2, ::2], x[:, 1::2, 1::2]
-    y = tf.concat([A, B, C, D], axis=-1)
-    return y
-
-
-def lazy_wavelet_inv(x, out_size=None):
-    """ Performs the inverse of a lazy wavelet transform - a 'lazy recombine'
-
-    Designed to work nicely with the lifting blocks.
-
-    Output will have 1/4 as many channels as the input, but will have one
-    quadruple the spatial size.  I.e. if x is a tensor of size (batch, h, w, c),
-    then the output will be of size (batch, 2*h, 2*w c/4). If we call the first
-    c channels the A group, then the second c the B group, and so on, the output
-    image will be interleaved like so::
-
-        Output image
-
-        A B A B A B ...
-        C D C D C D ...
-        A B A B A B ...
-        ...
-
-    Notes
-    -----
-    If the forward lazy wavelet needed padding, then we should be undoing it
-    here. For this, specify the out_size of the resulting tensor.
-
-    Parameters
-    ----------
-    x : tf tensor
-        Input to apply lazy wavelet transform to.
-    out_size : tuple of 4 ints or None
-        What the output size should be of the resulting tensor. The batch size
-        will be ignored, but the spatial and channel size need to be correct.
-        For an input spatial size of (h, r), the spatial dimensions (the 2nd and
-        3rd numbers in the tuple) should be either (2*h, 2*r),
-        (2*h-1, 2*r), (2*h, 2*r-1) or (2*h-1, 2*r-1). Will raise a ValueError if
-        not one of these options. Can also be None, in which (2*h, 2*r) is
-        assumed. The channel size should be 1/4 of the input channel size.
-
-    Returns
-    -------
-    y : tf tensor
-        Result after applying transform.
-
-    Raises
-    ------
-    ValueError when the out_size is invalid, or if the input tensor's channel
-    dimension is not divisible by 4.
-    """
-    xshape = x.get_shape().as_list()
-    # Check the channel axis
-    if xshape[-1] % 4 != 0:
-        raise ValueError('Input tensor needs to have 4k channels')
-    if xshape[-1] // 4 != out_size[-1]:
-        raise ValueError('Out tensor needs to have 1/4 channels of input')
-    k = xshape[-1] // 4
-
-    # Check the spatial axes
-    dbl_size = [2*xshape[1], 2*xshape[2]]
-    if out_size is None:
-        out_size = dbl_size
-    else:
-        out_size = out_size[1:3]
-    if out_size[0] != dbl_size[0] and out_size[0] != dbl_size[0] - 1:
-        raise ValueError('Row size in out_size incorrect')
-    if out_size[1] != dbl_size[1] and out_size[1] != dbl_size[1] - 1:
-        raise ValueError('Col size in out_size incorrect')
-
-    A, B = x[:, :, :, :k], x[:, :, :, k:2*k]
-    C, D = x[:, :, :, 2*k:3*k], x[:, :, :, 3*k:]
-
-    # Create the even and odd rows by careful stacking and reshaping.
-    r_o = tf.stack([A, B], axis=3)
-    r_o = tf.reshape(r_o, [-1, xshape[1], xshape[2]*2, k])
-    r_e = tf.stack([C, D], axis=3)
-    r_e = tf.reshape(r_e, [-1, xshape[1], xshape[2]*2, k])
-    y = tf.stack([r_o, r_e], axis=2)
-    y = tf.reshape(y, [-1, xshape[1]*2, xshape[2]*2, k])
-
-    # Cut off the edges if need be.
-    y = y[:, :out_size[0], :out_size[1], :]
-    return y
 
 
 def lift_residual_resample(x1, x2, filters, train=True, downsize=True,
