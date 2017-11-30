@@ -224,10 +224,48 @@ def loss(labels, logits, one_hot=True, num_classes=None, λ=1):
     return loss, data_loss, reg_term
 
 
-def _residual_core(x, filters, stride=1, train=True, wd=0.0001):
+def fixed_padding(inputs, kernel_size, data_format):
+    """Pads the input along the spatial dimensions independently of input size.
+
+    Parameters
+    ----------
+    inputs: tf.Tensor
+        A tensor of size [batch, channels, height_in, width_in] or
+        [batch, height_in, width_in, channels] depending on data_format.
+    kernel_size: int
+        The kernel to be used in the conv2d or max_pool2d operation.
+        Should be a positive integer.
+    data_format: str
+        The input format ('channels_last' or 'channels_first').
+
+    Returns
+    -------
+    y : tf.Tensor
+        A tensor with the same format as the input with the data either intact
+        (if kernel_size == 1) or padded (if kernel_size > 1).
+    """
+
+    pad_total = kernel_size - 1
+    pad_beg = pad_total // 2
+    pad_end = pad_total - pad_beg
+
+    if data_format == 'channels_first':
+        padded_inputs = tf.pad(inputs, [[0, 0], [0, 0],
+                               [pad_beg, pad_end], [pad_beg, pad_end]])
+    else:
+        padded_inputs = tf.pad(inputs, [[0, 0], [pad_beg, pad_end],
+                               [pad_beg, pad_end], [0, 0]])
+    return padded_inputs
+
+
+def _residual_core(x, filters, kernel_size=3, stride=1, train=True, wd=0.0,
+                   bn_momentum=0.99, bn_epsilon=0.001):
     """ Core function of a residual unit.
 
-    In -> batch norm -> relu -> conv -> bn -> relu -> conv
+    In -> conv -> bn -> relu -> conv
+
+    Note that the normal residual layer has a batch norm and relu before the
+    first conv. This is in the residual function which calls this.
 
     Parameters
     ----------
@@ -236,6 +274,8 @@ def _residual_core(x, filters, stride=1, train=True, wd=0.0001):
     filters : int
         Number of output filters (will be used for all convolutions in the
         resnet core).
+    kernel_size : int
+        Size of the filter kernels
     stride : int
         Conv stride
     train : bool or tf boolean tensor
@@ -243,32 +283,42 @@ def _residual_core(x, filters, stride=1, train=True, wd=0.0001):
         so that it can be modified on the fly.
     wd : float
         Weight decay term for the convolutional weights
+    bn_momentum : float
+        The momentum for the batch normalization layers in the resnet
+    bn_epsilon : float
+        The epsilon for the batch normalization layers in the resnet
     """
+
     init = init_ops.VarianceScaling(scale=1.0, mode='fan_out')
     reg = lambda w: real_reg(w, wd, norm=2)
-    bn_class = lambda name: normalization.BatchNormalization(name=name)
-    conv_class = lambda name: convolutional.Conv2D(
-        filters, 3, (stride, stride), use_bias=False, padding='same',
+    bn_class = lambda name: normalization.BatchNormalization(
+        name=name, momentum=bn_momentum, epsilon=bn_epsilon)
+    conv_class = lambda name, stride: convolutional.Conv2D(
+        filters, 3, (stride, stride), use_bias=False,
+        padding=('SAME' if stride == 1 else 'VALID'),
         kernel_initializer=init, kernel_regularizer=reg, name=name)
 
     with tf.variable_scope('sub1'):
-        bn = bn_class('init_bn')
-        x = bn.apply(x, training=train)
-        x = tf.nn.relu(x)
-        conv = conv_class('conv1')
+        # As we will do downsampling with strides, need to make sure the output
+        # size is the correct format.
+        if stride > 1:
+            x = fixed_padding(x, kernel_size, 'channels_last')
+
+        conv = conv_class('conv1', stride)
         x = conv.apply(x)
 
     with tf.variable_scope('sub2'):
-        bn = bn_class('bn2')
+        bn = bn_class('between_bn')
         x = bn.apply(x, training=train)
         x = tf.nn.relu(x)
-        conv = conv_class('conv2')
+        conv = conv_class('conv2', 1)
         x = conv.apply(x)
 
     return x
 
 
-def residual(x, filters, stride=1, train=True, wd=0.0001):
+def residual(x, filters, kernel_size=3, stride=1, train=True, wd=0.0,
+             bn_momentum=0.99, bn_epsilon=0.001, name='res'):
     """ Residual layer
 
     Uses the _residual_core function to create F(x), then adds x to it.
@@ -287,6 +337,10 @@ def residual(x, filters, stride=1, train=True, wd=0.0001):
         so that it can be modified on the fly.
     wd : float
         Weight decay term for the convolutional weights
+    bn_momentum : float
+        The momentum for the batch normalization layers in the resnet
+    bn_epsilon : float
+        The epsilon for the batch normalization layers in the resnet
 
     Notes
     -----
@@ -298,9 +352,30 @@ def residual(x, filters, stride=1, train=True, wd=0.0001):
         with tf.control_dependencies(update_ops):
             train_op = optimizer.minimize(loss)
     """
+    bn_class = lambda name: normalization.BatchNormalization(
+        name=name, momentum=bn_momentum, epsilon=bn_epsilon)
+
     orig_x = x
-    x = _residual_core(x, filters, stride, train, wd)
-    return x + orig_x
+    with tf.variable_scope(name):
+        bn = bn_class('init_bn')
+        x = bn.apply(x, training=train)
+        x = tf.nn.relu(x)
+
+        # The projection shortcut should come after the first batch norm and
+        # ReLU since it performs a 1x1 convolution.
+        if stride > 1:
+            orig_x = tf.layers.conv2d(
+                orig_x, filters=filters, strides=stride,
+                kernel_size=1, padding='VALID', use_bias=False,
+                kernel_initializer=tf.variance_scaling_initializer(),
+                data_format='channels_last')
+
+        x = _residual_core(x, filters, kernel_size, stride, train, wd,
+                           bn_momentum, bn_epsilon)
+
+        y = tf.add(x, orig_x)
+
+    return y
 
 
 def lift_residual_resample(x1, x2, filters, train=True, downsize=True,

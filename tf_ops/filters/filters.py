@@ -120,7 +120,7 @@ def filter_corners_3x3(trainable=False):
     return tf.Variable(X, name='dtcwt_3x3_corners', trainable=False)
 
 
-def filters_rotated():
+def filters_rotated(trainable=False):
     with resource_stream('ScatNet.filters', 'corner1.npy') as f:
         X1 = np.load(f)
     with resource_stream('ScatNet.filters', 'corner2.npy') as f:
@@ -131,7 +131,7 @@ def filters_rotated():
         #  X4 = np.load(f)
 
     X = tf.Variable(np.conj(np.concatenate((X1, X2, X3), axis=-1)),
-                    dtype=tf.complex64, trainable=False,
+                    dtype=tf.complex64, trainable=trainable,
                     validate_shape=True, expected_shape=(3,3,12,36),
                     name='dtcwt_3x3_corners',)
     return X

@@ -525,7 +525,7 @@ def combine_channels(x, dim, combine_weights=None):
     return tf.reduce_sum(Y, axis=3)
 
 
-def complex_mag(x, bias_start=0.0, learnable_bias=True,
+def complex_mag(x, bias_start=0.0, learnable_bias=False,
                 combine_channels=False, combine_weights=None,
                 return_direction=False):
     """ Perform wavelet magnitude operation on complex highpass outputs.
