@@ -499,6 +499,57 @@ def wavelet_inv(Yl, Yh, biort='near_sym_b_bp', qshift='qshift_b_bp',
     return X
 
 
+def wavelet_channel_gains(Yl, Yh, gain_mask, lp_gain, data_format='nhwc'):
+    """ Apply a conv layer in the wavelet domain
+
+    Parameters
+    ----------
+    pyramid : dtcwt.tf.Pyramid
+        Pyramid representation of a signal. It must have a lowpass_op and
+        a list of length J of highpasses_ops.
+    gain_mask : tf.Variable (tf.complex64)
+        Filters for each of the J highpasses. Must be of shape (J, f, C, 6)
+        where C is the number of input channels, J is the number of bandpass
+        coefficients, and f is the number of output filters.
+    lp_gain : tf.Variable (tf.float32)
+        Filters for the lowpass. Must be of shape (f, C).
+    data_format : str
+        The order of the dimensions in the pyramid
+    """
+    # Check the gain_mask input is ok. If it is None, set it to all ones. If it
+    # is a numpy array, convert it to tensorflow. Make sure it has 4 components
+    # to it.
+    if gain_mask is None:
+        gain_mask = tf.constant(np.ones((1, 1, 6, len(Yh))))
+    if not (isinstance(gain_mask, tf.Tensor) or
+            isinstance(gain_mask, tf.Variable)):
+        gain_mask = tf.constant(gain_mask)
+    assert len(gain_mask.get_shape()) == 4
+
+    # Do the same checks for the lowpass gain.
+    if lp_gain is None:
+        lp_gain = tf.constant([[1]])
+    if not (isinstance(lp_gain, tf.Tensor) or
+            isinstance(lp_gain, tf.Variable)):
+        lp_gain = tf.constant(lp_gain)
+    assert len(lp_gain.get_shape()) == 2
+
+    # Apply gains using einsum. For the bandpass signals, this will look like
+    # either 'nhwcl,fcl->nhwfl' or 'nchwl,fcl->nfhwl' depending on the
+    # dataformat.
+    gain_mask = tf.cast(gain_mask, tf.complex64)
+    lp_gain = tf.cast(lp_gain, tf.float32)
+    Yh_new = [None,] * len(Yh)
+    new_fmt = data_format.replace('c','f')
+    bp_einsum = '{}l,fcl->{}l'.format(data_format, new_fmt)
+    lp_einsum = '{},fc->{}'.format(data_format, new_fmt)
+    for i, level in enumerate(Yh):
+        Yh_new[i] = tf.einsum(bp_einsum, level, gain_mask[i])
+    Yl_new = tf.einsum(lp_einsum, Yl, lp_gain)
+
+    return Yl_new, Yh_new
+
+
 def combine_channels(x, dim, combine_weights=None):
     """ Sum over over the specified dimension with optional summing weights.
 
@@ -509,20 +560,29 @@ def combine_channels(x, dim, combine_weights=None):
     dim : int
         which dimension to sum over
     combine_weights : None or list of floats
-        The weights to use when summing. If left as none, the weights will be 1.
+        The weights to use when summing. If left as none, the weights will be
+        1/dimsize
 
     Returns
     -------
     Y : :py:class:`tf.Tensor` of shape one less than x
     """
+    s = 'abcdefghijklmnopqrstuvwxyz'
     if combine_weights is not None:
+        ndims = len(x.get_shape())
+        xstr = s[:ndims]
+        cstr = xstr[dim]
+        outstr = xstr.replace(cstr, '')
+        Y = tf.einsum(xstr + ',' + cstr + '->' + outstr, x, combine_weights)
         # reshape the weights to make them match the specified dimension
-        s = x.get_shape().as_list()
-        l = [-1] + [1 for x in range(dim, len(s) - 1)]
-        w = tf.reshape(tf.constant(combine_weights, tf.complex64), l)
-        Y = tf.multiply(x, w, name='weighted_combination')
-
-    return tf.reduce_sum(Y, axis=3)
+        #  s = x.get_shape().as_list()
+        #  l = [-1] + [1 for _ in range(dim, len(s) - 1)]
+        #  w = tf.reshape(tf.constant(combine_weights, tf.complex64), l)
+        #  Y = tf.multiply(x, w, name='weighted_combination')
+        #  Y = tf.reduce_sum(Y, axis=3)
+    else:
+        Y = tf.reduce_mean(x, axis=dim)
+    return Y
 
 
 def complex_mag(x, bias_start=0.0, learnable_bias=False,
